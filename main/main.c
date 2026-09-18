@@ -120,6 +120,8 @@ static void gpioInitRow(uint32_t rowNum, gpio_config_t * cfg);
 
 static void atomicDelay(uint32_t numCycles);
 
+static bool deltaLowerEps(uint32_t curr, uint32_t prev, uint32_t eps);
+
 void app_main(void) {
     // write your code here
     uint32_t colArray[] = {COL_0, COL_1, COL_2};
@@ -207,10 +209,16 @@ void app_main(void) {
     static bool suspended = false;
     static bool wakeup_host = false;
 
-    uint8_t keyMatrix[3][3][6] = {
-                                    {{HID_KEY_A}, {HID_KEY_B}, {HID_KEY_C}},
-                                    {{HID_KEY_D}, {HID_KEY_E}, {HID_KEY_F}},
-                                    {{HID_KEY_G}, {HID_KEY_H}, {HID_KEY_I}}
+    uint8_t keyMatrix[3][3][6] =    {
+                                        {{HID_KEY_A}, {HID_KEY_B}, {HID_KEY_C}},
+                                        {{HID_KEY_D}, {HID_KEY_E}, {HID_KEY_F}},
+                                        {{HID_KEY_G}, {HID_KEY_H}, {HID_KEY_I}}
+                                    };
+
+    uint32_t timeMatrix[3][3] = {   
+                                    {0,0,0},
+                                    {0,0,0},
+                                    {0,0,0}
                                 };
 
     while(1)
@@ -237,7 +245,7 @@ void app_main(void) {
         {
             static bool send_hid_data = true;
 
-            printf("USB Mounted\n");
+            // printf("USB Mounted\n");
 
             if (send_hid_data)
             {
@@ -248,15 +256,25 @@ void app_main(void) {
                     if (xQueueReceive(gpio_evt_queue,&keyProcessArgs,portMAX_DELAY))
                     {
                         // read the row and col value and then send data to USB for the key
-                        printf("Processing - Row: %lu | Col: %lu\n",keyProcessArgs.activeRowNum,keyProcessArgs.colNum);
+                        // printf("Processing - Row: %lu | Col: %lu\n",keyProcessArgs.activeRowNum,keyProcessArgs.colNum);
 
                         // get the mapping of the 
                         // uint8_t keycode[6] = keyMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum];
                         uint8_t keycode[6];
                         memcpy(keycode, keyMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], sizeof(uint8_t)*6);
-                        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, keycode);
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+
+                        if (!deltaLowerEps(keyProcessArgs.timeStamp, timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], 7.5)
+                        && gpio_get_level(keyProcessArgs.colNum))
+                        {
+
+                            printf(" >> Sending %ld + %ld | Processed @ %ld\n", keyProcessArgs.activeRowNum, keyProcessArgs.colNum, keyProcessArgs.timeStamp);
+
+                            tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, keycode);
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                            tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+                        }
+
+                        timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum] = keyProcessArgs.timeStamp;
                     }
                 }
                 else
@@ -358,5 +376,21 @@ static void atomicDelay(uint32_t numCycles)
     for (cycleCount = 0; cycleCount < numCycles; cycleCount++)
     {
         asm("nop");
+    }
+}
+
+static bool deltaLowerEps(uint32_t curr, uint32_t prev, uint32_t eps)
+{
+    printf("Curr time: %ld | Prev time: %ld\n", curr, prev);
+    uint32_t diff = curr - prev;
+
+    if (diff < eps)
+    {
+        return true;
+    }
+    else
+    {
+        // printf("Curr time: %ld | Prev time: %ld\n", curr, prev);
+        return false;
     }
 }
