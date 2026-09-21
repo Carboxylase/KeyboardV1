@@ -26,6 +26,22 @@ static uint32_t activeRowNum = 0;
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
+
+typedef struct buttonSelected
+{
+    uint32_t rowNum;
+    uint32_t colNum;
+    TickType_t timeStamp;
+}buttonSelected_t;
+
+buttonSelected_t buttonSelected;
+
+bool buttonPressed = false;
+
+bool transmission = false;
+
+
+
 static void gpio_isr_handler(void* arg);
 
 static void gpio_key_event_process(void *arg);
@@ -122,6 +138,8 @@ static void atomicDelay(uint32_t numCycles);
 
 static bool deltaLowerEps(uint32_t curr, uint32_t prev, uint32_t eps);
 
+static bool compKeycodes(uint8_t currKeycode [], uint8_t prevKeycode[]);
+
 void app_main(void) {
     // write your code here
     uint32_t colArray[] = {COL_0, COL_1, COL_2};
@@ -177,7 +195,7 @@ void app_main(void) {
         printf("Added ISR Handler for Col: %ld\n", colArray[i]);
     }
 
-    gpio_evt_queue = xQueueCreate(10, sizeof(keyProcessArgs_t));
+    gpio_evt_queue = xQueueCreate(1, sizeof(keyProcessArgs_t));
     printf("Created GPIO Event Queue\n");
 
     // create task to read the event queue
@@ -221,77 +239,96 @@ void app_main(void) {
                                     {0,0,0}
                                 };
 
+    bool nRollReset = true;
+    uint32_t rollCount = 0;
+    uint8_t prevKeycode [6];
+
+    /* START STATE MACHINE STUFF */
+    uint8_t mostRecentKeycode [6];
+    uint32_t mostRecentColNum = 0;
+    uint32_t mostRecentRowNum = 0;
+
+    bool transmitting = false;
+
+
+    /* END STATE MACHINE STUFF */
+
     while(1)
     {
-        // for (uint32_t i = 0; i < rowArrayLen; i++)
-        // {
-        //     activeRowNum = i; // declare which row is being stimulated
-        //     gpio_set_level(rowArray[i], 1);            
-        //     gpio_set_level(rowArray[i], 0);
-        //     vTaskDelay(10/portTICK_PERIOD_MS);
-        // }
 
-        // ---------------------------------------------------------------------------------
-
-        // activeRowNum = rowArray[0];
-        // gpio_set_level(rowArray[0], 1); // test
-        //  atomicDelay(POLLING_CYCLE_DURATION);
-        // taskYIELD();
-        // vTaskDelay(10/portTICK_PERIOD_MS);
-
-        // ---------------------------------------------------------------------------------
-
-        if (tud_mounted())
+        // printf("Recent Col Level of GPIO %ld: %d\n", colArray[mostRecentCol], gpio_get_level(mostRecentCol));
+        if (tud_mounted() || tud_suspended()) // check if usb connected
         {
-            static bool send_hid_data = true;
-
-            // printf("USB Mounted\n");
-
-            if (send_hid_data)
+            // printf("Mounted\n");
+            if (tud_hid_ready()) // check if usb is available for state change (changes may be ignored if not ready)
             {
-                if (!suspended)
-                {
-                    keyProcessArgs_t keyProcessArgs;
-                    
-                    if (xQueueReceive(gpio_evt_queue,&keyProcessArgs,portMAX_DELAY))
-                    {
-                        // read the row and col value and then send data to USB for the key
-                        // printf("Processing - Row: %lu | Col: %lu\n",keyProcessArgs.activeRowNum,keyProcessArgs.colNum);
+                // printf("HID ready\n");
 
-                        // get the mapping of the 
-                        // uint8_t keycode[6] = keyMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum];
+                // printf("Recent Col Level of GPIO %ld: %d\n", colArray[mostRecentColNum], gpio_get_level(colArray[mostRecentColNum]));
+
+                
+                // else
+                // {
+                    // keyProcessArgs_t keyProcessArgs;
+
+                    if (transmission) // xQueueReceive(gpio_evt_queue,&keyProcessArgs,portMAX_DELAY)
+                    {
+                        printf("taking from event queue\n");
                         uint8_t keycode[6];
-                        memcpy(keycode, keyMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], sizeof(uint8_t)*6);
+                        // memcpy(keycode, keyMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], sizeof(uint8_t)*6);
 
-                        if (!deltaLowerEps(keyProcessArgs.timeStamp, timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], 7.5)
-                        && gpio_get_level(keyProcessArgs.colNum))
-                        {
+                        memcpy(keycode, keyMatrix[buttonSelected.rowNum][buttonSelected.colNum], sizeof(uint8_t)*6);
 
-                            printf(" >> Sending %ld + %ld | Processed @ %ld\n", keyProcessArgs.activeRowNum, keyProcessArgs.colNum, keyProcessArgs.timeStamp);
+                        // mostRecentColNum = keyProcessArgs.colNum;
+                        // mostRecentRowNum = keyProcessArgs.activeRowNum;
+                        // transmitting = true;
 
+                        // if (true) //& gpio_get_level(keyProcessArgs.colNum)
+                        // //!deltaLowerEps(keyProcessArgs.timeStamp, timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum], 2.5)
+                        // {
+
+                            // printf(" >> Sending %ld + %ld | bProcessed @ %ld\n", keyProcessArgs.activeRowNum, keyProcessArgs.colNum, keyProcessArgs.timeStamp);
+
+                            printf(" >> Sending %ld + %ld | bProcessed @ %ld\n", buttonSelected.rowNum, buttonSelected.colNum, buttonSelected.timeStamp);
                             tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, keycode);
-                            vTaskDelay(pdMS_TO_TICKS(50));
-                            tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
-                        }
+                        //     printf("Sent code\n");
+                        //     while (!tud_hid_ready()){};
+                        //     tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+                        //     printf("Sent NULL\n");
 
-                        timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum] = keyProcessArgs.timeStamp;
-                    }
-                }
-                else
-                {
-                    if (wakeup_host)
-                    {
-                        tud_remote_wakeup();
-                        wakeup_host = false;
-                        printf("Wokeup host\n");
+
+                        //     memcpy(prevKeycode, keycode, 6 * sizeof(uint8_t));
+
+                        //     nRollReset = false;
+
+                        // }
+
+                        // timeMatrix[keyProcessArgs.activeRowNum][keyProcessArgs.colNum] = keyProcessArgs.timeStamp;
+
+                        // --------------------------------------------------------------------------------------------------
+
+                        // if 
                     }
                     else
                     {
-                        printf("Unable to wakeup host\n");
+                        // printf("nothing in queue\n");
                     }
+                // }
+                if (!gpio_get_level(colArray[mostRecentColNum])) // check if the most recent key is being pressed
+                {
+                    tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+                    printf("Transmitting Null\n");
+                    transmitting = false;
                 }
             }
-            
+            else
+            {
+                // printf("not ready\n");
+            }
+        }
+        else
+        {
+            // printf("doing nothing\n");
         }
 
         vTaskDelay(10/portTICK_PERIOD_MS);
@@ -309,6 +346,12 @@ static void gpio_isr_handler(void* arg)
     keyProcessArgs.colNum = keyPressArgs->colNum;
     keyProcessArgs.activeRowNum = *(keyPressArgs->activeRowNum);
     keyProcessArgs.timeStamp = xTaskGetTickCountFromISR();
+
+    buttonPressed = true;
+
+    buttonSelected.colNum = keyPressArgs->colNum;
+    buttonSelected.rowNum = *(keyPressArgs->activeRowNum);
+    buttonSelected.timeStamp = xTaskGetTickCountFromISR();
 
     xQueueSendFromISR(gpio_evt_queue,&keyProcessArgs,NULL);
     // printf("Adding gpio");
@@ -337,6 +380,7 @@ static void gpio_stimulate_pins(void *args)
     {
         for (uint32_t i = 0; i < stimArgs->rowArrayLen; i++)
         {
+            // printf("stimming pin %ld\n", stimArgs->rowArray[activeRowNum]);
             activeRowNum = i; //stimArgs->rowArray[i]; // declare which row is being stimulated
             gpio_set_level(stimArgs->rowArray[activeRowNum], 1);            
             gpio_set_level(stimArgs->rowArray[activeRowNum], 0);
@@ -344,6 +388,17 @@ static void gpio_stimulate_pins(void *args)
             // taskYIELD();
         }
         // taskYIELD();
+        
+        if (buttonPressed)
+        {
+            transmission = true;
+            buttonPressed = false;
+        }
+        else
+        {
+            transmission = false;
+        }
+
         vTaskDelay(10/portTICK_PERIOD_MS);
     }
 }
@@ -392,5 +447,19 @@ static bool deltaLowerEps(uint32_t curr, uint32_t prev, uint32_t eps)
     {
         // printf("Curr time: %ld | Prev time: %ld\n", curr, prev);
         return false;
+    }
+}
+
+static bool compKeycodes(uint8_t currKeycode [], uint8_t prevKeycode[])
+{
+    int32_t res = memcmp(currKeycode, prevKeycode, 6 * sizeof(uint8_t));
+
+    if (res == 0)
+    {
+        return 1;
+    }
+    else
+    {
+        return 0;
     }
 }
